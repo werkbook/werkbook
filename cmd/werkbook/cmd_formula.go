@@ -1,0 +1,41 @@
+package main
+
+import (
+	"sort"
+
+	"github.com/werkbook/werkbook/formula"
+)
+
+type formulaListData struct {
+	Functions []string `json:"functions"`
+	Count     int      `json:"count"`
+}
+
+func cmdFormula(args []string, globals globalFlags) int {
+	cmd := "formula"
+
+	if len(args) == 0 {
+		writeError(cmd, errUsage("subcommand required: 'formula list'"), globals)
+		return ExitUsage
+	}
+
+	switch args[0] {
+	case "list":
+		return cmdFormulaList(globals)
+	default:
+		writeError(cmd, errUsage("unknown subcommand: "+args[0]+". Available: list"), globals)
+		return ExitUsage
+	}
+}
+
+func cmdFormulaList(globals globalFlags) int {
+	funcs := formula.RegisteredFunctions()
+	sort.Strings(funcs)
+
+	data := formulaListData{
+		Functions: funcs,
+		Count:     len(funcs),
+	}
+	writeSuccess("formula", data, globals)
+	return ExitSuccess
+}

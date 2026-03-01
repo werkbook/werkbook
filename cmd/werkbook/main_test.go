@@ -1,0 +1,641 @@
+package main
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	werkbook "github.com/werkbook/werkbook"
+)
+
+// captureRun calls run() and captures stdout/stderr via a temp redirect.
+// Since run() uses fmt.Println/Fprintln directly, we redirect os.Stdout/os.Stderr.
+func captureRun(args []string) (stdout string, stderr string, exitCode int) {
+	oldStdout := os.Stdout
+	oldStderr := os.Stderr
+	defer func() {
+		os.Stdout = oldStdout
+		os.Stderr = oldStderr
+	}()
+
+	rOut, wOut, _ := os.Pipe()
+	rErr, wErr, _ := os.Pipe()
+	os.Stdout = wOut
+	os.Stderr = wErr
+
+	exitCode = run(args)
+
+	wOut.Close()
+	wErr.Close()
+
+	outBuf := make([]byte, 64*1024)
+	n, _ := rOut.Read(outBuf)
+	stdout = string(outBuf[:n])
+
+	errBuf := make([]byte, 64*1024)
+	n, _ = rErr.Read(errBuf)
+	stderr = string(errBuf[:n])
+
+	return stdout, stderr, exitCode
+}
+
+func parseResponse(t *testing.T, s string) Response {
+	t.Helper()
+	var resp Response
+	if err := json.Unmarshal([]byte(s), &resp); err != nil {
+		t.Fatalf("failed to parse response JSON: %v\nraw: %s", err, s)
+	}
+	return resp
+}
+
+func createTestFile(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.xlsx")
+	f := werkbook.New(werkbook.FirstSheet("Sheet1"))
+	s := f.Sheet("Sheet1")
+	s.SetValue("A1", "Name")
+	s.SetValue("B1", "Value")
+	s.SetValue("A2", "Alpha")
+	s.SetValue("B2", 10.0)
+	s.SetValue("A3", "Beta")
+	s.SetValue("B3", 20.0)
+	s.SetFormula("B4", "SUM(B2:B3)")
+	if err := f.SaveAs(path); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+	return path
+}
+
+// --- Version ---
+
+func TestVersion(t *testing.T) {
+	stdout, _, code := captureRun([]string{"version"})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	resp := parseResponse(t, stdout)
+	if !resp.OK {
+		t.Fatal("expected ok=true")
+	}
+	if resp.Command != "version" {
+		t.Fatalf("expected command=version, got %s", resp.Command)
+	}
+}
+
+// --- Info ---
+
+func TestInfo(t *testing.T) {
+	path := createTestFile(t)
+	stdout, _, code := captureRun([]string{"info", path})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	resp := parseResponse(t, stdout)
+	if !resp.OK {
+		t.Fatal("expected ok=true")
+	}
+	data, _ := json.Marshal(resp.Data)
+	var info infoData
+	json.Unmarshal(data, &info)
+	if len(info.Sheets) != 1 {
+		t.Fatalf("expected 1 sheet, got %d", len(info.Sheets))
+	}
+	si := info.Sheets[0]
+	if si.Name != "Sheet1" {
+		t.Errorf("expected sheet name Sheet1, got %s", si.Name)
+	}
+	if si.MaxRow != 4 {
+		t.Errorf("expected max_row=4, got %d", si.MaxRow)
+	}
+	if si.MaxCol != 2 {
+		t.Errorf("expected max_col=2, got %d", si.MaxCol)
+	}
+	if si.MaxColLetter != "B" {
+		t.Errorf("expected max_col_letter=B, got %s", si.MaxColLetter)
+	}
+	if !si.HasFormulas {
+		t.Error("expected has_formulas=true")
+	}
+}
+
+func TestInfoSheetFilter(t *testing.T) {
+	path := createTestFile(t)
+	stdout, _, code := captureRun([]string{"info", "--sheet", "Sheet1", path})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	resp := parseResponse(t, stdout)
+	data, _ := json.Marshal(resp.Data)
+	var info infoData
+	json.Unmarshal(data, &info)
+	if len(info.Sheets) != 1 {
+		t.Fatalf("expected 1 sheet, got %d", len(info.Sheets))
+	}
+}
+
+func TestInfoSheetNotFound(t *testing.T) {
+	path := createTestFile(t)
+	_, stderr, code := captureRun([]string{"info", "--sheet", "Nope", path})
+	if code != ExitValidate {
+		t.Fatalf("expected exit %d, got %d", ExitValidate, code)
+	}
+	resp := parseResponse(t, stderr)
+	if resp.OK {
+		t.Fatal("expected ok=false")
+	}
+	if resp.Error.Code != ErrCodeSheetNotFound {
+		t.Errorf("expected error code %s, got %s", ErrCodeSheetNotFound, resp.Error.Code)
+	}
+}
+
+func TestInfoFileNotFound(t *testing.T) {
+	_, stderr, code := captureRun([]string{"info", "/tmp/no_such_file_xyz.xlsx"})
+	if code != ExitFileIO {
+		t.Fatalf("expected exit %d, got %d", ExitFileIO, code)
+	}
+	resp := parseResponse(t, stderr)
+	if resp.Error.Code != ErrCodeFileNotFound {
+		t.Errorf("expected error code %s, got %s", ErrCodeFileNotFound, resp.Error.Code)
+	}
+}
+
+// --- Read ---
+
+func TestRead(t *testing.T) {
+	path := createTestFile(t)
+	stdout, _, code := captureRun([]string{"read", path})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	resp := parseResponse(t, stdout)
+	if !resp.OK {
+		t.Fatal("expected ok=true")
+	}
+	data, _ := json.Marshal(resp.Data)
+	var rd readData
+	json.Unmarshal(data, &rd)
+	if rd.Sheet != "Sheet1" {
+		t.Errorf("expected sheet=Sheet1, got %s", rd.Sheet)
+	}
+	if len(rd.Rows) == 0 {
+		t.Fatal("expected rows")
+	}
+}
+
+func TestReadRange(t *testing.T) {
+	path := createTestFile(t)
+	stdout, _, code := captureRun([]string{"read", "--range", "A1:A3", path})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	resp := parseResponse(t, stdout)
+	data, _ := json.Marshal(resp.Data)
+	var rd readData
+	json.Unmarshal(data, &rd)
+	if rd.Range != "A1:A3" {
+		t.Errorf("expected range=A1:A3, got %s", rd.Range)
+	}
+	// Should have rows 1,2,3 with only column A.
+	for _, row := range rd.Rows {
+		for cellRef := range row.Cells {
+			if !strings.HasPrefix(cellRef, "A") {
+				t.Errorf("expected only column A cells, got %s", cellRef)
+			}
+		}
+	}
+}
+
+func TestReadHeaders(t *testing.T) {
+	path := createTestFile(t)
+	stdout, _, code := captureRun([]string{"read", "--headers", path})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	resp := parseResponse(t, stdout)
+	data, _ := json.Marshal(resp.Data)
+	var rd readData
+	json.Unmarshal(data, &rd)
+	if len(rd.Headers) != 2 {
+		t.Fatalf("expected 2 headers, got %d", len(rd.Headers))
+	}
+	if rd.Headers[0] != "Name" || rd.Headers[1] != "Value" {
+		t.Errorf("unexpected headers: %v", rd.Headers)
+	}
+	// Data rows should exclude header row.
+	for _, row := range rd.Rows {
+		if row.Row == 1 {
+			t.Error("header row should not appear in data rows")
+		}
+	}
+}
+
+func TestReadIncludeFormulas(t *testing.T) {
+	path := createTestFile(t)
+	stdout, _, code := captureRun([]string{"read", "--include-formulas", path})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	resp := parseResponse(t, stdout)
+	data, _ := json.Marshal(resp.Data)
+	var rd readData
+	json.Unmarshal(data, &rd)
+	// B4 should have a formula.
+	found := false
+	for _, row := range rd.Rows {
+		if row.Row == 4 {
+			if cd, ok := row.Cells["B4"]; ok {
+				if cd.Formula == "SUM(B2:B3)" {
+					found = true
+				}
+			}
+		}
+	}
+	if !found {
+		t.Error("expected B4 to have formula SUM(B2:B3)")
+	}
+}
+
+func TestReadMarkdown(t *testing.T) {
+	path := createTestFile(t)
+	stdout, _, code := captureRun([]string{"read", "--format", "markdown", "--headers", path})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	if !strings.Contains(stdout, "| Name | Value |") {
+		t.Errorf("expected markdown header, got:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "|---|---|") {
+		t.Errorf("expected markdown separator, got:\n%s", stdout)
+	}
+}
+
+func TestReadCSV(t *testing.T) {
+	path := createTestFile(t)
+	stdout, _, code := captureRun([]string{"read", "--format", "csv", "--headers", path})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	lines := strings.Split(strings.TrimSpace(stdout), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected at least 2 lines, got %d", len(lines))
+	}
+	if lines[0] != "Name,Value" {
+		t.Errorf("expected CSV header 'Name,Value', got %q", lines[0])
+	}
+}
+
+// --- Edit ---
+
+func TestEdit(t *testing.T) {
+	path := createTestFile(t)
+	stdout, _, code := captureRun([]string{"edit", path, "--patch", `[{"cell":"A5","value":"Gamma"},{"cell":"B5","value":30}]`})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	resp := parseResponse(t, stdout)
+	if !resp.OK {
+		t.Fatal("expected ok=true")
+	}
+	data, _ := json.Marshal(resp.Data)
+	var ed editData
+	json.Unmarshal(data, &ed)
+	if ed.Applied != 2 {
+		t.Errorf("expected 2 applied, got %d", ed.Applied)
+	}
+
+	// Verify by reading back.
+	stdout2, _, code2 := captureRun([]string{"read", "--range", "A5:B5", path})
+	if code2 != 0 {
+		t.Fatalf("expected exit 0 on read, got %d", code2)
+	}
+	if !strings.Contains(stdout2, "Gamma") {
+		t.Error("expected to find Gamma in read output")
+	}
+}
+
+func TestEditDryRun(t *testing.T) {
+	path := createTestFile(t)
+	stdout, _, code := captureRun([]string{"edit", "--dry-run", path, "--patch", `[{"cell":"A1","value":"Changed"}]`})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	resp := parseResponse(t, stdout)
+	if !resp.OK {
+		t.Fatal("expected ok=true")
+	}
+
+	// Verify file was NOT changed.
+	stdout2, _, _ := captureRun([]string{"read", "--range", "A1:A1", path})
+	if strings.Contains(stdout2, "Changed") {
+		t.Error("dry-run should not modify file")
+	}
+}
+
+func TestEditFormula(t *testing.T) {
+	path := createTestFile(t)
+	stdout, _, code := captureRun([]string{"edit", path, "--patch", `[{"cell":"C1","formula":"SUM(B2:B3)"}]`})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	resp := parseResponse(t, stdout)
+	data, _ := json.Marshal(resp.Data)
+	var ed editData
+	json.Unmarshal(data, &ed)
+	if ed.Operations[0].Action != "set_formula" {
+		t.Errorf("expected action=set_formula, got %s", ed.Operations[0].Action)
+	}
+}
+
+func TestEditAddDeleteSheet(t *testing.T) {
+	path := createTestFile(t)
+	// Add a sheet.
+	stdout, _, code := captureRun([]string{"edit", path, "--patch", `[{"add_sheet":"NewSheet"}]`})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	resp := parseResponse(t, stdout)
+	if !resp.OK {
+		t.Fatal("expected ok=true")
+	}
+
+	// Verify it exists.
+	stdout2, _, _ := captureRun([]string{"info", path})
+	if !strings.Contains(stdout2, "NewSheet") {
+		t.Error("expected NewSheet in info output")
+	}
+
+	// Delete it.
+	stdout3, _, code3 := captureRun([]string{"edit", path, "--patch", `[{"delete_sheet":"NewSheet"}]`})
+	if code3 != 0 {
+		t.Fatalf("expected exit 0, got %d", code3)
+	}
+	resp3 := parseResponse(t, stdout3)
+	if !resp3.OK {
+		t.Fatal("expected ok=true")
+	}
+}
+
+func TestEditInvalidPatch(t *testing.T) {
+	path := createTestFile(t)
+	_, stderr, code := captureRun([]string{"edit", path, "--patch", `not json`})
+	if code != ExitValidate {
+		t.Fatalf("expected exit %d, got %d", ExitValidate, code)
+	}
+	resp := parseResponse(t, stderr)
+	if resp.Error.Code != ErrCodeInvalidPatch {
+		t.Errorf("expected error code %s, got %s", ErrCodeInvalidPatch, resp.Error.Code)
+	}
+}
+
+// --- Create ---
+
+func TestCreate(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "new.xlsx")
+	stdout, _, code := captureRun([]string{"create", path, "--spec", `{"sheets":["Data","Summary"],"cells":[{"cell":"A1","value":"test","sheet":"Data"}]}`})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	resp := parseResponse(t, stdout)
+	if !resp.OK {
+		t.Fatal("expected ok=true")
+	}
+	data, _ := json.Marshal(resp.Data)
+	var cd createData
+	json.Unmarshal(data, &cd)
+	if cd.Sheets != 2 {
+		t.Errorf("expected 2 sheets, got %d", cd.Sheets)
+	}
+	if cd.Cells != 1 {
+		t.Errorf("expected 1 cell, got %d", cd.Cells)
+	}
+
+	// Verify the file exists and is readable.
+	stdout2, _, code2 := captureRun([]string{"info", path})
+	if code2 != 0 {
+		t.Fatalf("expected exit 0 on info, got %d", code2)
+	}
+	if !strings.Contains(stdout2, "Data") || !strings.Contains(stdout2, "Summary") {
+		t.Error("expected both sheets in info output")
+	}
+}
+
+// --- Calc ---
+
+func TestCalc(t *testing.T) {
+	path := createTestFile(t)
+	stdout, _, code := captureRun([]string{"calc", path})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	resp := parseResponse(t, stdout)
+	if !resp.OK {
+		t.Fatal("expected ok=true")
+	}
+	// B4 should have calculated value 30 (10+20).
+	data, _ := json.Marshal(resp.Data)
+	var rd readData
+	json.Unmarshal(data, &rd)
+	for _, row := range rd.Rows {
+		if row.Row == 4 {
+			if cd, ok := row.Cells["B4"]; ok {
+				if v, ok := cd.Value.(float64); ok {
+					if v != 30 {
+						t.Errorf("expected B4=30, got %v", v)
+					}
+				} else {
+					t.Errorf("expected B4 to be number, got %T", cd.Value)
+				}
+			} else {
+				t.Error("expected B4 in row 4")
+			}
+		}
+	}
+}
+
+func TestCalcWithOutput(t *testing.T) {
+	path := createTestFile(t)
+	dir := t.TempDir()
+	outPath := filepath.Join(dir, "calced.xlsx")
+	_, _, code := captureRun([]string{"calc", path, "--output", outPath})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	// Verify the output file was created.
+	if _, err := os.Stat(outPath); err != nil {
+		t.Fatalf("expected output file to exist: %v", err)
+	}
+}
+
+// --- Formula List ---
+
+func TestFormulaList(t *testing.T) {
+	stdout, _, code := captureRun([]string{"formula", "list"})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	resp := parseResponse(t, stdout)
+	if !resp.OK {
+		t.Fatal("expected ok=true")
+	}
+	data, _ := json.Marshal(resp.Data)
+	var fl formulaListData
+	json.Unmarshal(data, &fl)
+	if fl.Count == 0 {
+		t.Error("expected non-zero function count")
+	}
+	// Check sorted.
+	for i := 1; i < len(fl.Functions); i++ {
+		if fl.Functions[i] < fl.Functions[i-1] {
+			t.Errorf("functions not sorted: %s before %s", fl.Functions[i-1], fl.Functions[i])
+			break
+		}
+	}
+}
+
+// --- Usage / Error cases ---
+
+func TestNoArgs(t *testing.T) {
+	_, _, code := captureRun([]string{})
+	if code != ExitUsage {
+		t.Fatalf("expected exit %d, got %d", ExitUsage, code)
+	}
+}
+
+func TestUnknownCommand(t *testing.T) {
+	_, stderr, code := captureRun([]string{"bogus"})
+	if code != ExitUsage {
+		t.Fatalf("expected exit %d, got %d", ExitUsage, code)
+	}
+	resp := parseResponse(t, stderr)
+	if resp.Error.Code != ErrCodeUsage {
+		t.Errorf("expected error code %s, got %s", ErrCodeUsage, resp.Error.Code)
+	}
+}
+
+func TestInvalidFormat(t *testing.T) {
+	_, stderr, code := captureRun([]string{"--format", "xml", "version"})
+	if code != ExitUsage {
+		t.Fatalf("expected exit %d, got %d", ExitUsage, code)
+	}
+	resp := parseResponse(t, stderr)
+	if resp.Error.Code != ErrCodeInvalidFormat {
+		t.Errorf("expected error code %s, got %s", ErrCodeInvalidFormat, resp.Error.Code)
+	}
+}
+
+// --- Edit with style ---
+
+func TestEditStyle(t *testing.T) {
+	path := createTestFile(t)
+	patch := `[{"cell":"A1","style":{"font":{"bold":true,"color":"FF0000"}}}]`
+	stdout, _, code := captureRun([]string{"edit", path, "--patch", patch})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	resp := parseResponse(t, stdout)
+	if !resp.OK {
+		t.Fatal("expected ok=true")
+	}
+	data, _ := json.Marshal(resp.Data)
+	var ed editData
+	json.Unmarshal(data, &ed)
+	if ed.Operations[0].Action != "set_style" {
+		t.Errorf("expected action=set_style, got %s", ed.Operations[0].Action)
+	}
+}
+
+func TestEditColumnWidth(t *testing.T) {
+	path := createTestFile(t)
+	patch := `[{"cell":"A","column_width":25.0}]`
+	stdout, _, code := captureRun([]string{"edit", path, "--patch", patch})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	resp := parseResponse(t, stdout)
+	if !resp.OK {
+		t.Fatal("expected ok=true")
+	}
+	data, _ := json.Marshal(resp.Data)
+	var ed editData
+	json.Unmarshal(data, &ed)
+	if ed.Operations[0].Action != "set_column_width" {
+		t.Errorf("expected action=set_column_width, got %s", ed.Operations[0].Action)
+	}
+}
+
+func TestEditRowHeight(t *testing.T) {
+	path := createTestFile(t)
+	patch := `[{"row":1,"row_height":30.0}]`
+	stdout, _, code := captureRun([]string{"edit", path, "--patch", patch})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	resp := parseResponse(t, stdout)
+	if !resp.OK {
+		t.Fatal("expected ok=true")
+	}
+	data, _ := json.Marshal(resp.Data)
+	var ed editData
+	json.Unmarshal(data, &ed)
+	if ed.Operations[0].Action != "set_row_height" {
+		t.Errorf("expected action=set_row_height, got %s", ed.Operations[0].Action)
+	}
+}
+
+func TestEditClearCell(t *testing.T) {
+	path := createTestFile(t)
+	patch := `[{"cell":"A1","value":null}]`
+	stdout, _, code := captureRun([]string{"edit", path, "--patch", patch})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	resp := parseResponse(t, stdout)
+	if !resp.OK {
+		t.Fatal("expected ok=true")
+	}
+
+	// Verify A1 is now empty.
+	stdout2, _, _ := captureRun([]string{"read", "--range", "A1:A1", path})
+	resp2 := parseResponse(t, stdout2)
+	data, _ := json.Marshal(resp2.Data)
+	var rd readData
+	json.Unmarshal(data, &rd)
+	// A1 should either not be in rows or be empty.
+	for _, row := range rd.Rows {
+		if _, ok := row.Cells["A1"]; ok {
+			t.Error("expected A1 to be cleared")
+		}
+	}
+}
+
+// --- Partial failure ---
+
+func TestEditPartialFailure(t *testing.T) {
+	path := createTestFile(t)
+	// First op succeeds, second fails (delete non-existent sheet).
+	patch := `[{"cell":"A1","value":"OK"},{"delete_sheet":"NoSuchSheet"}]`
+	stdout, _, code := captureRun([]string{"edit", path, "--patch", patch})
+	if code != ExitPartial {
+		t.Fatalf("expected exit %d, got %d", ExitPartial, code)
+	}
+	resp := parseResponse(t, stdout)
+	if !resp.OK {
+		t.Fatal("expected ok=true for partial failure")
+	}
+	data, _ := json.Marshal(resp.Data)
+	var ed editData
+	json.Unmarshal(data, &ed)
+	if ed.Applied != 1 {
+		t.Errorf("expected 1 applied, got %d", ed.Applied)
+	}
+	if ed.Operations[0].Status != "ok" {
+		t.Errorf("expected first op ok, got %s", ed.Operations[0].Status)
+	}
+	if ed.Operations[1].Status != "error" {
+		t.Errorf("expected second op error, got %s", ed.Operations[1].Status)
+	}
+}

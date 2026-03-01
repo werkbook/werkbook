@@ -1,0 +1,133 @@
+package main
+
+import (
+	"io"
+	"os"
+
+	werkbook "github.com/werkbook/werkbook"
+)
+
+type editData struct {
+	File       string     `json:"file"`
+	Applied    int        `json:"applied"`
+	Operations []opResult `json:"operations"`
+}
+
+func cmdEdit(args []string, globals globalFlags) int {
+	cmd := "edit"
+	var sheetFlag, patchFlag, outputFlag string
+	var dryRun bool
+
+	i := 0
+	var filePath string
+	for i < len(args) {
+		switch args[i] {
+		case "--sheet":
+			if i+1 >= len(args) {
+				writeError(cmd, errUsage("--sheet requires a value"), globals)
+				return ExitUsage
+			}
+			sheetFlag = args[i+1]
+			i += 2
+		case "--patch":
+			if i+1 >= len(args) {
+				writeError(cmd, errUsage("--patch requires a value"), globals)
+				return ExitUsage
+			}
+			patchFlag = args[i+1]
+			i += 2
+		case "--output":
+			if i+1 >= len(args) {
+				writeError(cmd, errUsage("--output requires a value"), globals)
+				return ExitUsage
+			}
+			outputFlag = args[i+1]
+			i += 2
+		case "--dry-run":
+			dryRun = true
+			i++
+		default:
+			if filePath == "" && len(args[i]) > 0 && args[i][0] != '-' {
+				filePath = args[i]
+				i++
+			} else {
+				writeError(cmd, errUsage("unknown flag: "+args[i]), globals)
+				return ExitUsage
+			}
+		}
+	}
+
+	if filePath == "" {
+		writeError(cmd, errUsage("file path required"), globals)
+		return ExitUsage
+	}
+
+	// Read patch from flag or stdin.
+	var patchBytes []byte
+	if patchFlag != "" {
+		patchBytes = []byte(patchFlag)
+	} else {
+		var err error
+		patchBytes, err = io.ReadAll(os.Stdin)
+		if err != nil {
+			writeError(cmd, errInternal(err), globals)
+			return ExitInternal
+		}
+	}
+
+	if len(patchBytes) == 0 {
+		writeError(cmd, errInvalidPatch(nil), globals)
+		return ExitValidate
+	}
+
+	ops, err := parsePatchOps(patchBytes)
+	if err != nil {
+		writeError(cmd, errInvalidPatch(err), globals)
+		return ExitValidate
+	}
+
+	f, err := werkbook.Open(filePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			writeError(cmd, errFileNotFound(filePath, err), globals)
+		} else {
+			writeError(cmd, errFileOpen(filePath, err), globals)
+		}
+		return ExitFileIO
+	}
+
+	// Determine default sheet.
+	defaultSheet := sheetFlag
+	if defaultSheet == "" {
+		names := f.SheetNames()
+		if len(names) > 0 {
+			defaultSheet = names[0]
+		}
+	}
+
+	results, applied := applyPatches(f, ops, defaultSheet)
+
+	if !dryRun {
+		savePath := outputFlag
+		if savePath == "" {
+			savePath = filePath
+		}
+		if err := f.SaveAs(savePath); err != nil {
+			writeError(cmd, errFileSave(savePath, err), globals)
+			return ExitFileIO
+		}
+	}
+
+	data := editData{
+		File:       filePath,
+		Applied:    applied,
+		Operations: results,
+	}
+
+	writeSuccess(cmd, data, globals)
+
+	if applied < len(ops) {
+		return ExitPartial
+	}
+	return ExitSuccess
+}
