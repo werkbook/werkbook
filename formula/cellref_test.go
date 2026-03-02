@@ -103,6 +103,51 @@ func TestParseCellRefTokenErrors(t *testing.T) {
 	}
 }
 
+func TestParseCellRefToken3DRefError(t *testing.T) {
+	// 3D sheet references (multi-sheet ranges) are not supported and must
+	// return an error instead of panicking.
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"quoted_3d", "'Sheet2:Sheet5'!A11"},
+		{"quoted_3d_spaces", "'My Sheet:Other Sheet'!B2"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := parseCellRefToken(tt.input)
+			if err == nil {
+				t.Fatalf("parseCellRefToken(%q) expected error for 3D ref, got nil", tt.input)
+			}
+			t.Logf("parseCellRefToken(%q) correctly returned error: %v", tt.input, err)
+		})
+	}
+}
+
+func TestParseCellRefTokenOutOfRange(t *testing.T) {
+	// Column or row numbers exceeding Excel limits must return an error.
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"col_too_large", "AAAA1"},           // 4 letters → col > 16384
+		{"col_beyond_xfd", "XFE1"},           // one past XFD
+		{"row_too_large", "A1048577"},         // one past max row
+		{"row_way_too_large", "A9999999999"},  // very large row
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := parseCellRefToken(tt.input)
+			if err == nil {
+				t.Fatalf("parseCellRefToken(%q) expected error for out-of-range ref, got nil", tt.input)
+			}
+			t.Logf("parseCellRefToken(%q) correctly returned error: %v", tt.input, err)
+		})
+	}
+}
+
 func TestColLettersToNumber(t *testing.T) {
 	tests := []struct {
 		input string

@@ -139,13 +139,30 @@ func cmdRead(args []string, globals globalFlags) int {
 		}
 	}
 
-	// Build row data.
-	var rows []rowData
 	startRow := row1
 	if headersFlag {
 		startRow = row1 + 1
 	}
 
+	// Handle non-JSON formats without building the JSON row data.
+	if globals.format == FormatMarkdown || globals.format == FormatCSV {
+		var tableRows [][]string
+		for r := startRow; r <= row2; r++ {
+			var row []string
+			for c := col1; c <= col2; c++ {
+				ref, _ := werkbook.CoordinatesToCellName(c, r)
+				v, _ := s.GetValue(ref)
+				row = append(row, valueToString(v))
+			}
+			tableRows = append(tableRows, row)
+		}
+		output := formatTable(globals.format, headers, tableRows)
+		fmt.Print(output)
+		return ExitSuccess
+	}
+
+	// Build row data for JSON output.
+	var rows []rowData
 	for r := startRow; r <= row2; r++ {
 		cells := make(map[string]cellData)
 		for c := col1; c <= col2; c++ {
@@ -180,24 +197,6 @@ func cmdRead(args []string, globals globalFlags) int {
 		if len(cells) > 0 {
 			rows = append(rows, rowData{Row: r, Cells: cells})
 		}
-	}
-
-	// Handle non-JSON formats.
-	if globals.format == FormatMarkdown || globals.format == FormatCSV {
-		tableHeaders := headers
-		var tableRows [][]string
-		for r := startRow; r <= row2; r++ {
-			var row []string
-			for c := col1; c <= col2; c++ {
-				ref, _ := werkbook.CoordinatesToCellName(c, r)
-				v, _ := s.GetValue(ref)
-				row = append(row, valueToString(v))
-			}
-			tableRows = append(tableRows, row)
-		}
-		output := formatTable(globals.format, tableHeaders, tableRows)
-		fmt.Print(output)
-		return ExitSuccess
 	}
 
 	if rows == nil {

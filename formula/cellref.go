@@ -30,6 +30,11 @@ func parseCellRefToken(raw string) (*CellRef, error) {
 		}
 		// Extract sheet name, un-escaping doubled quotes.
 		ref.Sheet = strings.ReplaceAll(s[1:i], "''", "'")
+		// Reject 3D sheet references like 'Sheet2:Sheet5'!A1 — the colon
+		// between two sheet names is an unsupported multi-sheet range syntax.
+		if strings.ContainsRune(ref.Sheet, ':') {
+			return nil, fmt.Errorf("3D sheet references are not supported in %q", raw)
+		}
 		if i+1 >= len(s) || s[i+1] != '!' {
 			return nil, fmt.Errorf("expected '!' after quoted sheet name in %q", raw)
 		}
@@ -63,6 +68,9 @@ func parseCellRefToken(raw string) (*CellRef, error) {
 		return nil, fmt.Errorf("expected column letters in %q", raw)
 	}
 	ref.Col = colLettersToNumber(s[colStart:i])
+	if ref.Col > 16384 { // XFD = 16384, max Excel column
+		return nil, fmt.Errorf("column out of range in %q", raw)
+	}
 
 	if i < len(s) && s[i] == '$' {
 		ref.AbsRow = true
@@ -82,6 +90,9 @@ func parseCellRefToken(raw string) (*CellRef, error) {
 		row := 0
 		for _, c := range s[rowStart:i] {
 			row = row*10 + int(c-'0')
+		}
+		if row > 1048576 { // max Excel row
+			return nil, fmt.Errorf("row out of range in %q", raw)
 		}
 		ref.Row = row
 	}

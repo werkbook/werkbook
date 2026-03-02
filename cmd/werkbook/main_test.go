@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,13 +31,11 @@ func captureRun(args []string) (stdout string, stderr string, exitCode int) {
 	wOut.Close()
 	wErr.Close()
 
-	outBuf := make([]byte, 64*1024)
-	n, _ := rOut.Read(outBuf)
-	stdout = string(outBuf[:n])
+	outBytes, _ := io.ReadAll(rOut)
+	stdout = string(outBytes)
 
-	errBuf := make([]byte, 64*1024)
-	n, _ = rErr.Read(errBuf)
-	stderr = string(errBuf[:n])
+	errBytes, _ := io.ReadAll(rErr)
+	stderr = string(errBytes)
 
 	return stdout, stderr, exitCode
 }
@@ -618,13 +617,16 @@ func TestEditPartialFailure(t *testing.T) {
 	path := createTestFile(t)
 	// First op succeeds, second fails (delete non-existent sheet).
 	patch := `[{"cell":"A1","value":"OK"},{"delete_sheet":"NoSuchSheet"}]`
-	stdout, _, code := captureRun([]string{"edit", path, "--patch", patch})
+	_, stderr, code := captureRun([]string{"edit", path, "--patch", patch})
 	if code != ExitPartial {
 		t.Fatalf("expected exit %d, got %d", ExitPartial, code)
 	}
-	resp := parseResponse(t, stdout)
-	if !resp.OK {
-		t.Fatal("expected ok=true for partial failure")
+	resp := parseResponse(t, stderr)
+	if resp.OK {
+		t.Fatal("expected ok=false for partial failure")
+	}
+	if resp.Error == nil || resp.Error.Code != ErrCodePartialFailure {
+		t.Fatalf("expected PARTIAL_FAILURE error code, got %+v", resp.Error)
 	}
 	data, _ := json.Marshal(resp.Data)
 	var ed editData

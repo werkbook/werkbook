@@ -82,6 +82,7 @@ const (
 	prefixRBP    = 9 // unary - and + bind tighter than * but looser than ^
 
 	maxExcelRow = 1048576 // maximum row number in Excel
+	maxExcelCol = 16384   // maximum column number in Excel (XFD)
 )
 
 // parseExpression is the core Pratt parsing loop.
@@ -127,14 +128,29 @@ func (p *Parser) parseExpression(minBP int) (Node, error) {
 			if err != nil {
 				return nil, err
 			}
-			fromRef, ok := left.(*CellRef)
-			if !ok {
-				return nil, fmt.Errorf("left side of ':' must be a cell reference, got %s", left)
+
+			// Convert row-only references: both sides must be NumberLit
+			// for a row range like 5:6 → A5:XFD6.
+			fromRef, fromOK := left.(*CellRef)
+			toRef, toOK := right.(*CellRef)
+			if !fromOK || !toOK {
+				fromNum, fromIsNum := left.(*NumberLit)
+				toNum, toIsNum := right.(*NumberLit)
+				if fromIsNum && toIsNum {
+					fromRow := int(fromNum.Value)
+					toRow := int(toNum.Value)
+					if fromRow < 1 || toRow < 1 || float64(fromRow) != fromNum.Value || float64(toRow) != toNum.Value {
+						return nil, fmt.Errorf("invalid row range %s:%s", fromNum.Raw, toNum.Raw)
+					}
+					fromRef = &CellRef{Col: 0, Row: fromRow}
+					toRef = &CellRef{Col: 0, Row: toRow}
+				} else if !fromOK {
+					return nil, fmt.Errorf("left side of ':' must be a cell reference, got %s", left)
+				} else {
+					return nil, fmt.Errorf("right side of ':' must be a cell reference, got %s", right)
+				}
 			}
-			toRef, ok := right.(*CellRef)
-			if !ok {
-				return nil, fmt.Errorf("right side of ':' must be a cell reference, got %s", right)
-			}
+
 			// Expand column-only references (Row==0) into full-column ranges.
 			// F:F becomes F1:F1048576.
 			if fromRef.Row == 0 {
@@ -142,6 +158,14 @@ func (p *Parser) parseExpression(minBP int) (Node, error) {
 			}
 			if toRef.Row == 0 {
 				toRef.Row = maxExcelRow
+			}
+			// Expand row-only references (Col==0) into full-row ranges.
+			// 5:6 becomes A5:XFD6.
+			if fromRef.Col == 0 {
+				fromRef.Col = 1
+			}
+			if toRef.Col == 0 {
+				toRef.Col = maxExcelCol
 			}
 			left = &RangeRef{From: fromRef, To: toRef}
 			for p.peek().Type == TokPercent {

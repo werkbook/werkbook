@@ -221,67 +221,7 @@ func fnTEXT(args []Value) (Value, error) {
 		return *e, nil
 	}
 	format := ValueToString(args[1])
-	return StringVal(formatNumber(n, format)), nil
-}
-
-func formatNumber(n float64, format string) string {
-	upper := strings.ToUpper(format)
-
-	switch {
-	case strings.Contains(format, "%"):
-		decimals := strings.Count(format, "0") - 1
-		if decimals < 0 {
-			decimals = 0
-		}
-		return fmt.Sprintf("%.*f%%", decimals, n*100)
-
-	case upper == "YYYY-MM-DD" || upper == "YYYY/MM/DD":
-		t := ExcelSerialToTime(n)
-		return t.Format("2006-01-02")
-
-	case upper == "MM/DD/YYYY":
-		t := ExcelSerialToTime(n)
-		return t.Format("01/02/2006")
-
-	case upper == "HH:MM:SS" || upper == "H:MM:SS":
-		t := ExcelSerialToTime(n)
-		return t.Format("15:04:05")
-
-	case upper == "HH:MM" || upper == "H:MM":
-		t := ExcelSerialToTime(n)
-		return t.Format("15:04")
-
-	case strings.Contains(format, "#,##0") || strings.Contains(format, "#,###"):
-		decimals := 0
-		if dotIdx := strings.Index(format, "."); dotIdx >= 0 {
-			decimals = len(format) - dotIdx - 1
-		}
-		return FormatWithCommas(n, decimals)
-
-	case strings.Contains(format, "0."):
-		decimals := strings.Count(format[strings.Index(format, "."):], "0")
-		return fmt.Sprintf("%.*f", decimals, n)
-
-	case isZeroPadFormat(format):
-		width := len(format)
-		return fmt.Sprintf("%0*.0f", width, n)
-
-	default:
-		return fmt.Sprintf("%g", n)
-	}
-}
-
-// isZeroPadFormat returns true if format consists entirely of '0' characters (e.g. "0", "000000").
-func isZeroPadFormat(format string) bool {
-	if len(format) == 0 {
-		return false
-	}
-	for _, c := range format {
-		if c != '0' {
-			return false
-		}
-	}
-	return true
+	return StringVal(formatExcelNumber(n, format)), nil
 }
 
 func FormatWithCommas(n float64, decimals int) string {

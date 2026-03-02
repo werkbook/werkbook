@@ -7,7 +7,6 @@ import (
 
 type globalFlags struct {
 	format string
-	quiet  bool
 }
 
 func main() {
@@ -28,8 +27,6 @@ func run(args []string) int {
 			}
 			globals.format = args[i+1]
 			i++
-		case "--quiet":
-			globals.quiet = true
 		default:
 			remaining = append(remaining, args[i])
 		}
@@ -110,6 +107,5 @@ Commands:
   version   Print version info
 
 Global flags:
-  --format <json|markdown|csv>   Output format (default: json)
-  --quiet                        Suppress non-essential output`)
+  --format <json|markdown|csv>   Output format (default: json)`)
 }

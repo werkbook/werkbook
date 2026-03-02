@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"strings"
 )
 
@@ -73,11 +72,7 @@ func csvLine(fields []string) string {
 
 func csvEscape(s string) string {
 	if strings.ContainsAny(s, ",\"\n\r") {
-		return fmt.Sprintf("%q", s)
+		return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
 	}
 	return s
-}
-
-func valueTypeString(typeName string) string {
-	return typeName
 }

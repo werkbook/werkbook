@@ -183,6 +183,295 @@ func TestTEXTFormatExtended(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// TEXT — audit failure categories
+// ---------------------------------------------------------------------------
+
+func TestTEXTDateTimeFormats(t *testing.T) {
+	resolver := &mockResolver{}
+
+	tests := []struct {
+		name    string
+		formula string
+		want    string
+	}{
+		// Date formatting from Excel serial numbers
+		{name: "mm-dd-yy", formula: `TEXT(17816.607951388887, "mm-dd-yy")`, want: "11-10-48"},
+		{name: "yyyy-mm-dd", formula: `TEXT(44197, "yyyy-mm-dd")`, want: "2021-01-01"},
+		{name: "mm/dd/yyyy", formula: `TEXT(44197, "mm/dd/yyyy")`, want: "01/01/2021"},
+		{name: "d-mmm-yy", formula: `TEXT(44197, "d-mmm-yy")`, want: "1-Jan-21"},
+		{name: "dd-mmm-yyyy", formula: `TEXT(44197, "dd-mmm-yyyy")`, want: "01-Jan-2021"},
+		{name: "mmmm_d_yyyy", formula: `TEXT(44197, "mmmm d, yyyy")`, want: "January 1, 2021"},
+
+		// Time formatting
+		{name: "h:mm:ss", formula: `TEXT(0.5, "h:mm:ss")`, want: "12:00:00"},
+		{name: "hh:mm:ss", formula: `TEXT(0.25, "hh:mm:ss")`, want: "06:00:00"},
+		{name: "h:mm_AM/PM", formula: `TEXT(0.75, "h:mm AM/PM")`, want: "6:00 PM"},
+		{name: "h:mm_AM/PM_morning", formula: `TEXT(0.25, "h:mm AM/PM")`, want: "6:00 AM"},
+
+		// Combined date/time
+		{name: "mm/dd/yyyy_hh:mm", formula: `TEXT(44197.5, "mm/dd/yyyy hh:mm")`, want: "01/01/2021 12:00"},
+
+		// Single m/d (no leading zero)
+		{name: "m/d/yy", formula: `TEXT(44197, "m/d/yy")`, want: "1/1/21"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cf := evalCompile(t, tt.formula)
+			got, err := Eval(cf, resolver, nil)
+			if err != nil {
+				t.Fatalf("Eval(%q): %v", tt.formula, err)
+			}
+			if got.Type != ValueString || got.Str != tt.want {
+				t.Errorf("Eval(%q) = %q, want %q", tt.formula, got.Str, tt.want)
+			}
+		})
+	}
+}
+
+func TestTEXTElapsedTime(t *testing.T) {
+	resolver := &mockResolver{}
+
+	tests := []struct {
+		name    string
+		formula string
+		want    string
+	}{
+		{name: "elapsed_hours", formula: `TEXT(3.14159, "[h]:mm:ss")`, want: "75:23:53"},
+		{name: "elapsed_with_frac", formula: `TEXT(3.14159, "[h]:mm:ss.000")`, want: "75:23:53.376"},
+		{name: "simple_elapsed", formula: `TEXT(1.5, "[h]:mm:ss")`, want: "36:00:00"},
+		{name: "zero_elapsed", formula: `TEXT(0, "[h]:mm:ss")`, want: "0:00:00"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cf := evalCompile(t, tt.formula)
+			got, err := Eval(cf, resolver, nil)
+			if err != nil {
+				t.Fatalf("Eval(%q): %v", tt.formula, err)
+			}
+			if got.Type != ValueString || got.Str != tt.want {
+				t.Errorf("Eval(%q) = %q, want %q", tt.formula, got.Str, tt.want)
+			}
+		})
+	}
+}
+
+func TestTEXTCommaGrouping(t *testing.T) {
+	resolver := &mockResolver{}
+
+	tests := []struct {
+		name    string
+		formula string
+		want    string
+	}{
+		{name: "millions", formula: `TEXT(1234567, "#,##0")`, want: "1,234,567"},
+		{name: "with_decimals", formula: `TEXT(1234.56, "#,##0.00")`, want: "1,234.56"},
+		{name: "negative", formula: `TEXT(-1234567, "#,##0")`, want: "-1,234,567"},
+		{name: "small_number", formula: `TEXT(42, "#,##0")`, want: "42"},
+		{name: "zero", formula: `TEXT(0, "#,##0.00")`, want: "0.00"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cf := evalCompile(t, tt.formula)
+			got, err := Eval(cf, resolver, nil)
+			if err != nil {
+				t.Fatalf("Eval(%q): %v", tt.formula, err)
+			}
+			if got.Type != ValueString || got.Str != tt.want {
+				t.Errorf("Eval(%q) = %q, want %q", tt.formula, got.Str, tt.want)
+			}
+		})
+	}
+}
+
+func TestTEXTCurrency(t *testing.T) {
+	resolver := &mockResolver{}
+
+	tests := []struct {
+		name    string
+		formula string
+		want    string
+	}{
+		{name: "dollar_prefix", formula: `TEXT(1234.5, "$#,##0.00")`, want: "$1,234.50"},
+		{name: "dollar_simple", formula: `TEXT(12.3, "$#0.00")`, want: "$12.30"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cf := evalCompile(t, tt.formula)
+			got, err := Eval(cf, resolver, nil)
+			if err != nil {
+				t.Fatalf("Eval(%q): %v", tt.formula, err)
+			}
+			if got.Type != ValueString || got.Str != tt.want {
+				t.Errorf("Eval(%q) = %q, want %q", tt.formula, got.Str, tt.want)
+			}
+		})
+	}
+}
+
+func TestTEXTPercentWithComma(t *testing.T) {
+	resolver := &mockResolver{}
+
+	tests := []struct {
+		name    string
+		formula string
+		want    string
+	}{
+		{name: "percent_comma", formula: `TEXT(-1.2345, "#,##0.00%")`, want: "-123.45%"},
+		{name: "large_percent", formula: `TEXT(123.45, "#,##0%")`, want: "12,345%"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cf := evalCompile(t, tt.formula)
+			got, err := Eval(cf, resolver, nil)
+			if err != nil {
+				t.Fatalf("Eval(%q): %v", tt.formula, err)
+			}
+			if got.Type != ValueString || got.Str != tt.want {
+				t.Errorf("Eval(%q) = %q, want %q", tt.formula, got.Str, tt.want)
+			}
+		})
+	}
+}
+
+func TestTEXTScientific(t *testing.T) {
+	resolver := &mockResolver{}
+
+	tests := []struct {
+		name    string
+		formula string
+		want    string
+	}{
+		{name: "sci_basic", formula: `TEXT(123456.789, "0.00E+00")`, want: "1.23E+05"},
+		{name: "sci_small", formula: `TEXT(0.00123, "0.00E+00")`, want: "1.23E-03"},
+		{name: "sci_negative", formula: `TEXT(-5678, "0.0E+0")`, want: "-5.7E+3"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cf := evalCompile(t, tt.formula)
+			got, err := Eval(cf, resolver, nil)
+			if err != nil {
+				t.Fatalf("Eval(%q): %v", tt.formula, err)
+			}
+			if got.Type != ValueString || got.Str != tt.want {
+				t.Errorf("Eval(%q) = %q, want %q", tt.formula, got.Str, tt.want)
+			}
+		})
+	}
+}
+
+func TestTEXTFraction(t *testing.T) {
+	resolver := &mockResolver{}
+
+	tests := []struct {
+		name    string
+		formula string
+		want    string
+	}{
+		{name: "simple_fraction", formula: `TEXT(0.5, "# #/#")`, want: "1/2"},
+		{name: "mixed_fraction", formula: `TEXT(3.25, "# #/#")`, want: "3 1/4"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cf := evalCompile(t, tt.formula)
+			got, err := Eval(cf, resolver, nil)
+			if err != nil {
+				t.Fatalf("Eval(%q): %v", tt.formula, err)
+			}
+			if got.Type != ValueString || got.Str != tt.want {
+				t.Errorf("Eval(%q) = %q, want %q", tt.formula, got.Str, tt.want)
+			}
+		})
+	}
+}
+
+func TestTEXTSections(t *testing.T) {
+	resolver := &mockResolver{}
+
+	tests := []struct {
+		name    string
+		formula string
+		want    string
+	}{
+		{name: "pos_neg_sections", formula: `TEXT(-42, "0;(0)")`, want: "(42)"},
+		{name: "pos_section", formula: `TEXT(42, "0;(0)")`, want: "42"},
+		{name: "three_sections_zero", formula: `TEXT(0, "0;(0);\"zero\"")`, want: "zero"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cf := evalCompile(t, tt.formula)
+			got, err := Eval(cf, resolver, nil)
+			if err != nil {
+				t.Fatalf("Eval(%q): %v", tt.formula, err)
+			}
+			if got.Type != ValueString || got.Str != tt.want {
+				t.Errorf("Eval(%q) = %q, want %q", tt.formula, got.Str, tt.want)
+			}
+		})
+	}
+}
+
+func TestTEXTLiterals(t *testing.T) {
+	resolver := &mockResolver{}
+
+	tests := []struct {
+		name    string
+		formula string
+		want    string
+	}{
+		{name: "quoted_literal", formula: `TEXT(12.3, "\"Value: \"0.00")`, want: "Value: 12.30"},
+		{name: "general_format", formula: `TEXT(1, "General")`, want: "1"},
+		{name: "general_float", formula: `TEXT(3.14, "General")`, want: "3.14"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cf := evalCompile(t, tt.formula)
+			got, err := Eval(cf, resolver, nil)
+			if err != nil {
+				t.Fatalf("Eval(%q): %v", tt.formula, err)
+			}
+			if got.Type != ValueString || got.Str != tt.want {
+				t.Errorf("Eval(%q) = %q, want %q", tt.formula, got.Str, tt.want)
+			}
+		})
+	}
+}
+
+func TestTEXTZeroPad(t *testing.T) {
+	resolver := &mockResolver{}
+
+	tests := []struct {
+		name    string
+		formula string
+		want    string
+	}{
+		{name: "zero_pad_6", formula: `TEXT(42, "000000")`, want: "000042"},
+		{name: "zero_pad_3", formula: `TEXT(7, "000")`, want: "007"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cf := evalCompile(t, tt.formula)
+			got, err := Eval(cf, resolver, nil)
+			if err != nil {
+				t.Fatalf("Eval(%q): %v", tt.formula, err)
+			}
+			if got.Type != ValueString || got.Str != tt.want {
+				t.Errorf("Eval(%q) = %q, want %q", tt.formula, got.Str, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
 // FIND edge cases
 // ---------------------------------------------------------------------------
 

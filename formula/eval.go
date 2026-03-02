@@ -24,6 +24,14 @@ type EvalContext struct {
 	CurrentRow     int
 	CurrentSheet   string
 	IsArrayFormula bool // true for CSE (Ctrl+Shift+Enter) array formulas
+	Resolver       CellResolver // the active resolver; used by SUBTOTAL to inspect cells
+}
+
+// SubtotalChecker is an optional interface that a CellResolver may implement
+// to allow SUBTOTAL to skip cells that themselves contain SUBTOTAL formulas,
+// preventing double-counting of nested subtotals.
+type SubtotalChecker interface {
+	IsSubtotalCell(sheet string, col, row int) bool
 }
 
 // Eval executes a compiled formula and returns the result.
@@ -102,7 +110,8 @@ func Eval(cf *CompiledFormula, resolver CellResolver, ctx *EvalContext) (Value, 
 					rows = append(rows, emptyRow)
 				}
 			}
-			push(Value{Type: ValueArray, Array: rows})
+			origin := addr // capture for the Value
+			push(Value{Type: ValueArray, Array: rows, RangeOrigin: &origin})
 
 		case OpLoadCellRef:
 			addr := cf.Refs[inst.Operand]

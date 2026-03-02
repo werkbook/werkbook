@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"os"
 
@@ -124,10 +125,26 @@ func cmdEdit(args []string, globals globalFlags) int {
 		Operations: results,
 	}
 
-	writeSuccess(cmd, data, globals)
-
 	if applied < len(ops) {
+		resp := &Response{
+			OK:      false,
+			Command: cmd,
+			Data:    data,
+			Error: &ErrorInfo{
+				Code:    ErrCodePartialFailure,
+				Message: fmt.Sprintf("%d of %d operations failed", len(ops)-applied, len(ops)),
+				Hint:    "Check the 'operations' array for per-operation errors.",
+			},
+		}
+		out, err := marshalJSON(resp)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, `{"ok":false,"error":{"code":"INTERNAL","message":%q}}`+"\n", err.Error())
+		} else {
+			fmt.Fprintln(os.Stderr, string(out))
+		}
 		return ExitPartial
 	}
+
+	writeSuccess(cmd, data, globals)
 	return ExitSuccess
 }

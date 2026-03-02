@@ -377,6 +377,62 @@ func TestEvalImplicitIntersectionFullColumn(t *testing.T) {
 
 }
 
+func TestEvalSUMFullRowRange(t *testing.T) {
+	// SUM(5:6) should sum all values in rows 5 and 6 across all columns.
+	resolver := &mockResolver{
+		cells: map[CellAddr]Value{
+			{Col: 1, Row: 5}: NumberVal(10),
+			{Col: 2, Row: 5}: NumberVal(20),
+			{Col: 3, Row: 5}: NumberVal(30),
+			{Col: 1, Row: 6}: NumberVal(40),
+		},
+	}
+
+	ctx := &EvalContext{
+		CurrentCol:     5,
+		CurrentRow:     1,
+		CurrentSheet:   "Sheet1",
+		IsArrayFormula: true,
+	}
+
+	cf := evalCompile(t, "SUM(5:6)")
+	got, err := Eval(cf, resolver, ctx)
+	if err != nil {
+		t.Fatalf("Eval: %v", err)
+	}
+	if got.Type != ValueNumber || got.Num != 100 {
+		t.Errorf("SUM(5:6) = %v (%g), want 100", got.Type, got.Num)
+	}
+}
+
+func TestEvalImplicitIntersectionFullRow(t *testing.T) {
+	// In a non-array formula context, 1:1 should intersect at the current column.
+	resolver := &mockResolver{
+		cells: map[CellAddr]Value{
+			{Col: 1, Row: 1}: NumberVal(100),
+			{Col: 2, Row: 1}: NumberVal(200),
+			{Col: 3, Row: 1}: NumberVal(300),
+		},
+	}
+
+	ctx := &EvalContext{
+		CurrentCol:     2,
+		CurrentRow:     5,
+		CurrentSheet:   "Sheet1",
+		IsArrayFormula: false,
+	}
+
+	// ABS(1:1) in col 2 with implicit intersection → ABS(B1) = 200
+	cf := evalCompile(t, "ABS(1:1)")
+	got, err := Eval(cf, resolver, ctx)
+	if err != nil {
+		t.Fatalf("Eval: %v", err)
+	}
+	if got.Type != ValueNumber || got.Num != 200 {
+		t.Errorf("ABS(1:1) with implicit intersection = %v (%g), want 200", got.Type, got.Num)
+	}
+}
+
 func TestEvalArrayFormulaFullColumn(t *testing.T) {
 	// When IsArrayFormula=true, F:F should load as a full array.
 	resolver := &mockResolver{
@@ -1005,6 +1061,45 @@ func TestEvalIFNA(t *testing.T) {
 	}
 	if got.Type != ValueNumber || got.Num != 42 {
 		t.Errorf("IFNA(42,...) = %v, want 42", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 3D sheet references — must return parse error, not panic
+// ---------------------------------------------------------------------------
+
+func TestEval3DSheetRefNoPanic(t *testing.T) {
+	// SUM(Sheet2:Sheet5!A11) is a 3D sheet reference (multi-sheet range).
+	// The formula engine does not support 3D references, but it must return
+	// a graceful error instead of panicking.
+	formulas := []string{
+		"SUM(Sheet2:Sheet5!A11)",
+		"SUM('Sheet2:Sheet5'!A11)",
+	}
+
+	for _, f := range formulas {
+		t.Run(f, func(t *testing.T) {
+			node, err := Parse(f)
+			if err != nil {
+				// Parse error is the expected graceful failure.
+				t.Logf("Parse(%q) returned expected error: %v", f, err)
+				return
+			}
+			// If parsing somehow succeeded, compilation should fail or
+			// evaluation should not panic.
+			cf, err := Compile(f, node)
+			if err != nil {
+				t.Logf("Compile(%q) returned expected error: %v", f, err)
+				return
+			}
+			resolver := &mockResolver{}
+			_, err = Eval(cf, resolver, nil)
+			if err != nil {
+				t.Logf("Eval(%q) returned expected error: %v", f, err)
+				return
+			}
+			t.Errorf("expected error for 3D sheet reference %q, but got none", f)
+		})
 	}
 }
 

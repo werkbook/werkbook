@@ -68,9 +68,13 @@ func errInvalidRange(ref string, err error) *ErrorInfo {
 }
 
 func errInvalidPatch(err error) *ErrorInfo {
+	msg := "no patch data provided"
+	if err != nil {
+		msg = fmt.Sprintf("invalid patch JSON: %v", err)
+	}
 	return &ErrorInfo{
 		Code:    ErrCodeInvalidPatch,
-		Message: fmt.Sprintf("invalid patch JSON: %v", err),
+		Message: msg,
 		Hint:    "Provide a JSON array of patch operations via --patch or stdin.",
 	}
 }

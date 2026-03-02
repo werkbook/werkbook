@@ -88,12 +88,13 @@ func errorCodeFromAST(code ErrorCode) ErrorValue {
 
 // Value is a tagged union representing a formula engine value.
 type Value struct {
-	Type  ValueType
-	Num   float64
-	Str   string
-	Bool  bool
-	Err   ErrorValue
-	Array [][]Value // used by ValueArray for range results
+	Type        ValueType
+	Num         float64
+	Str         string
+	Bool        bool
+	Err         ErrorValue
+	Array       [][]Value  // used by ValueArray for range results
+	RangeOrigin *RangeAddr // set on ValueArray when loaded from a worksheet range
 }
 
 // NumberVal creates a Value holding a float64.

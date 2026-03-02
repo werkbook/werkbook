@@ -54,3 +54,51 @@ func TestFormulaEvaluation(t *testing.T) {
 		}
 	}
 }
+
+// TestEmptyRefReturnsZero verifies that a formula referencing an empty cell
+// returns 0 (TypeNumber), matching Excel behavior where empty formula results
+// are coerced to numeric zero.
+func TestEmptyRefReturnsZero(t *testing.T) {
+	f := werkbook.New()
+	s := f.Sheet("Sheet1")
+
+	// B1 references A1 which is empty — Excel would show/cache 0.
+	s.SetFormula("B1", "A1")
+
+	val, err := s.GetValue("B1")
+	if err != nil {
+		t.Fatalf("GetValue(B1): %v", err)
+	}
+	if val.Type != werkbook.TypeNumber {
+		t.Errorf("B1 type = %v, want TypeNumber", val.Type)
+	}
+	if val.Number != 0 {
+		t.Errorf("B1 = %g, want 0", val.Number)
+	}
+}
+
+// TestCrossSheetEmptyRefReturnsZero verifies that a cross-sheet reference to
+// an empty cell returns 0, not empty. This matches Excel behavior where
+// formulas like ='Sheet2'!A1 (with A1 empty) cache 0.
+func TestCrossSheetEmptyRefReturnsZero(t *testing.T) {
+	f := werkbook.New()
+	s1 := f.Sheet("Sheet1")
+	_, err := f.NewSheet("Sheet2")
+	if err != nil {
+		t.Fatalf("NewSheet: %v", err)
+	}
+
+	// Reference empty cell on Sheet2
+	s1.SetFormula("A1", "'Sheet2'!A1")
+
+	val, err := s1.GetValue("A1")
+	if err != nil {
+		t.Fatalf("GetValue(A1): %v", err)
+	}
+	if val.Type != werkbook.TypeNumber {
+		t.Errorf("A1 type = %v, want TypeNumber", val.Type)
+	}
+	if val.Number != 0 {
+		t.Errorf("A1 = %g, want 0", val.Number)
+	}
+}

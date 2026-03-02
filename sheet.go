@@ -5,6 +5,7 @@ import (
 	"io"
 	"iter"
 	"sort"
+	"strings"
 
 	"github.com/werkbook/werkbook/formula"
 	"github.com/werkbook/werkbook/ooxml"
@@ -452,6 +453,7 @@ func (s *Sheet) evaluateFormula(c *Cell, col, row int) Value {
 		CurrentCol:   col,
 		CurrentRow:   row,
 		CurrentSheet: s.name,
+		Resolver:     resolver,
 	}
 	result, err := formula.Eval(cf, resolver, ctx)
 	if err != nil {
@@ -462,6 +464,8 @@ func (s *Sheet) evaluateFormula(c *Cell, col, row int) Value {
 }
 
 // formulaValueToValue converts a formula.Value to a werkbook Value.
+// Excel coerces empty formula results to 0 (a cell containing =EmptyRef
+// displays and caches 0, not blank), so ValueEmpty maps to TypeNumber 0.
 func formulaValueToValue(fv formula.Value) Value {
 	switch fv.Type {
 	case formula.ValueNumber:
@@ -473,7 +477,8 @@ func formulaValueToValue(fv formula.Value) Value {
 	case formula.ValueError:
 		return Value{Type: TypeError, String: fv.Err.String()}
 	default:
-		return Value{Type: TypeEmpty}
+		// Excel treats empty formula results as numeric 0.
+		return Value{Type: TypeNumber, Number: 0}
 	}
 }
 
@@ -553,6 +558,36 @@ func (fr *fileResolver) GetRangeValues(addr formula.RangeAddr) [][]formula.Value
 		rows[r-addr.FromRow] = row
 	}
 	return rows
+}
+
+// IsSubtotalCell reports whether the cell at (sheet, col, row) contains a formula
+// whose outermost function call is SUBTOTAL. This is used by the SUBTOTAL function
+// to skip nested SUBTOTAL results and avoid double-counting.
+func (fr *fileResolver) IsSubtotalCell(sheet string, col, row int) bool {
+	s := fr.resolveSheet(sheet)
+	if s == nil {
+		return false
+	}
+	r, ok := s.rows[row]
+	if !ok {
+		return false
+	}
+	c, ok := r.cells[col]
+	if !ok {
+		return false
+	}
+	return isSubtotalFormula(c.formula)
+}
+
+// isSubtotalFormula returns true if the formula string starts with "SUBTOTAL("
+// (case-insensitive), with optional leading whitespace. This matches both
+// "SUBTOTAL(...)" and "_xlfn.SUBTOTAL(...)".
+func isSubtotalFormula(f string) bool {
+	if f == "" {
+		return false
+	}
+	upper := strings.ToUpper(strings.TrimSpace(f))
+	return strings.HasPrefix(upper, "SUBTOTAL(") || strings.HasPrefix(upper, "_XLFN.SUBTOTAL(")
 }
 
 // valueToFormulaValue converts a werkbook Value to a formula.Value.

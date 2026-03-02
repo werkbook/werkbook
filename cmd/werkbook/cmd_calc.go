@@ -62,16 +62,6 @@ func cmdCalc(args []string, globals globalFlags) int {
 		return ExitFileIO
 	}
 
-	f.Recalculate()
-
-	// Save if --output specified.
-	if outputFlag != "" {
-		if err := f.SaveAs(outputFlag); err != nil {
-			writeError(cmd, errFileSave(outputFlag, err), globals)
-			return ExitFileIO
-		}
-	}
-
 	// Resolve sheet.
 	sheetName := sheetFlag
 	if sheetName == "" {
@@ -87,6 +77,16 @@ func cmdCalc(args []string, globals globalFlags) int {
 	if s == nil {
 		writeError(cmd, errSheetNotFound(sheetName), globals)
 		return ExitValidate
+	}
+
+	f.Recalculate()
+
+	// Save if --output specified.
+	if outputFlag != "" {
+		if err := f.SaveAs(outputFlag); err != nil {
+			writeError(cmd, errFileSave(outputFlag, err), globals)
+			return ExitFileIO
+		}
 	}
 
 	// Determine range.

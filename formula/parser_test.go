@@ -254,6 +254,40 @@ func TestParseFullColumnRanges(t *testing.T) {
 	}
 }
 
+func TestParseFullRowRanges(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		// Full-row references are expanded to col A:XFD (1:16384).
+		{"5:6", "(: A5 XFD6)"},
+		{"1:1", "(: A1 XFD1)"},
+		{"100:200", "(: A100 XFD200)"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			node, err := Parse(tt.input)
+			if err != nil {
+				t.Fatalf("Parse(%q) error: %v", tt.input, err)
+			}
+			got := node.String()
+			if got != tt.want {
+				t.Errorf("Parse(%q)\n  got:  %s\n  want: %s", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseFullRowInFormula(t *testing.T) {
+	// The exact type of formula that should work: SUM(5:6)
+	input := "SUM(5:6)"
+	_, err := Parse(input)
+	if err != nil {
+		t.Fatalf("Parse(%q) error: %v", input, err)
+	}
+}
+
 func TestParseFullColumnInFormula(t *testing.T) {
 	// The exact formula from problem.xlsx
 	input := "MAX(IF(ISNUMBER(Ledger!F:F),ABS(Ledger!F:F)))"

@@ -160,27 +160,29 @@ func applyOnePatch(f *werkbook.File, op patchOp, defaultSheet string, index int)
 
 // jsonValueToGo converts a JSON raw value to a Go value suitable for SetValue.
 func jsonValueToGo(raw json.RawMessage) (any, error) {
-	if string(raw) == "null" {
-		return nil, nil
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("empty value")
 	}
-
-	// Try number.
-	var num float64
-	if err := json.Unmarshal(raw, &num); err == nil {
+	switch raw[0] {
+	case 'n': // null
+		return nil, nil
+	case '"':
+		var s string
+		if err := json.Unmarshal(raw, &s); err != nil {
+			return nil, err
+		}
+		return s, nil
+	case 't', 'f':
+		var b bool
+		if err := json.Unmarshal(raw, &b); err != nil {
+			return nil, err
+		}
+		return b, nil
+	default: // number
+		var num float64
+		if err := json.Unmarshal(raw, &num); err != nil {
+			return nil, fmt.Errorf("unsupported JSON value: %s", string(raw))
+		}
 		return num, nil
 	}
-
-	// Try bool.
-	var b bool
-	if err := json.Unmarshal(raw, &b); err == nil {
-		return b, nil
-	}
-
-	// Try string.
-	var s string
-	if err := json.Unmarshal(raw, &s); err == nil {
-		return s, nil
-	}
-
-	return nil, fmt.Errorf("unsupported JSON value: %s", string(raw))
 }

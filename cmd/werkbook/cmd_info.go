@@ -38,7 +38,7 @@ func cmdInfo(args []string, globals globalFlags) int {
 			sheetFlag = args[i+1]
 			i += 2
 		default:
-			if filePath == "" && args[i][0] != '-' {
+			if filePath == "" && len(args[i]) > 0 && args[i][0] != '-' {
 				filePath = args[i]
 				i++
 			} else {
@@ -114,7 +114,7 @@ func buildSheetInfo(s *werkbook.Sheet) sheetInfo {
 			if !v.IsEmpty() {
 				nonEmpty++
 			}
-			if cell.Formula() != "" {
+			if !hasFormulas && cell.Formula() != "" {
 				hasFormulas = true
 			}
 		}
