@@ -68,7 +68,7 @@ func run(args []string) int {
 		return cmdFormula(cmdArgs, globals)
 	case "version":
 		return cmdVersion(globals)
-	case "help":
+	case "help", "--help", "-h":
 		return cmdHelp(cmdArgs, globals)
 	default:
 		writeError("", errUsage(fmt.Sprintf("unknown command %q", command)), globals)
@@ -128,7 +128,7 @@ func hasHelpFlag(args []string) bool {
 func cmdHelp(args []string, globals globalFlags) int {
 	if len(args) == 0 {
 		printUsage()
-		return ExitUsage
+		return ExitSuccess
 	}
 	switch args[0] {
 	case "info":

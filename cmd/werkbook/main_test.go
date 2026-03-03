@@ -768,3 +768,429 @@ func TestEditPartialFailure(t *testing.T) {
 		t.Errorf("expected second op error, got %s", ed.Operations[1].Status)
 	}
 }
+
+// --- Global --help flag ---
+
+func TestGlobalHelpFlag(t *testing.T) {
+	_, stderr, code := captureRun([]string{"--help"})
+	if code != ExitSuccess {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	if !strings.Contains(stderr, "Usage: werkbook") {
+		t.Errorf("expected usage text, got:\n%s", stderr)
+	}
+}
+
+func TestGlobalHelpShortFlag(t *testing.T) {
+	_, stderr, code := captureRun([]string{"-h"})
+	if code != ExitSuccess {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	if !strings.Contains(stderr, "Usage: werkbook") {
+		t.Errorf("expected usage text, got:\n%s", stderr)
+	}
+}
+
+func TestHelpNoArgsExitSuccess(t *testing.T) {
+	_, _, code := captureRun([]string{"help"})
+	if code != ExitSuccess {
+		t.Fatalf("expected exit 0 for help with no args, got %d", code)
+	}
+}
+
+// --- --limit flag ---
+
+func TestReadLimit(t *testing.T) {
+	path := createTestFile(t)
+	stdout, _, code := captureRun([]string{"read", "--headers", "--limit", "1", path})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	resp := parseResponse(t, stdout)
+	data, _ := json.Marshal(resp.Data)
+	var rd readData
+	json.Unmarshal(data, &rd)
+	if len(rd.Rows) != 1 {
+		t.Errorf("expected 1 row with --limit 1, got %d", len(rd.Rows))
+	}
+}
+
+func TestReadLimitMarkdown(t *testing.T) {
+	path := createTestFile(t)
+	stdout, _, code := captureRun([]string{"read", "--format", "markdown", "--headers", "--limit", "1", path})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	// Should have header + separator + 1 data row = 3 lines.
+	lines := strings.Split(strings.TrimSpace(stdout), "\n")
+	if len(lines) != 3 {
+		t.Errorf("expected 3 markdown lines (header+sep+1row), got %d:\n%s", len(lines), stdout)
+	}
+}
+
+func TestReadHeadAlias(t *testing.T) {
+	path := createTestFile(t)
+	stdout, _, code := captureRun([]string{"read", "--headers", "--head", "1", path})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	resp := parseResponse(t, stdout)
+	data, _ := json.Marshal(resp.Data)
+	var rd readData
+	json.Unmarshal(data, &rd)
+	if len(rd.Rows) != 1 {
+		t.Errorf("expected 1 row with --head 1, got %d", len(rd.Rows))
+	}
+}
+
+// --- --all-sheets flag ---
+
+func createMultiSheetTestFile(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "multi.xlsx")
+	f := werkbook.New(werkbook.FirstSheet("Data"))
+	s := f.Sheet("Data")
+	s.SetValue("A1", "Name")
+	s.SetValue("B1", "Score")
+	s.SetValue("A2", "Alice")
+	s.SetValue("B2", 90.0)
+	s2, _ := f.NewSheet("Summary")
+	s2.SetValue("A1", "Total")
+	s2.SetValue("B1", 90.0)
+	if err := f.SaveAs(path); err != nil {
+		t.Fatalf("failed to create multi-sheet test file: %v", err)
+	}
+	return path
+}
+
+func TestReadAllSheetsJSON(t *testing.T) {
+	path := createMultiSheetTestFile(t)
+	stdout, _, code := captureRun([]string{"read", "--all-sheets", path})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	resp := parseResponse(t, stdout)
+	if !resp.OK {
+		t.Fatal("expected ok=true")
+	}
+	data, _ := json.Marshal(resp.Data)
+	var md readMultiData
+	json.Unmarshal(data, &md)
+	if len(md.Sheets) != 2 {
+		t.Fatalf("expected 2 sheets, got %d", len(md.Sheets))
+	}
+	if md.Sheets[0].Sheet != "Data" {
+		t.Errorf("expected first sheet=Data, got %s", md.Sheets[0].Sheet)
+	}
+	if md.Sheets[1].Sheet != "Summary" {
+		t.Errorf("expected second sheet=Summary, got %s", md.Sheets[1].Sheet)
+	}
+}
+
+func TestReadAllSheetsMarkdown(t *testing.T) {
+	path := createMultiSheetTestFile(t)
+	stdout, _, code := captureRun([]string{"read", "--format", "markdown", "--all-sheets", path})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	if !strings.Contains(stdout, "## Data") {
+		t.Errorf("expected '## Data' header, got:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "## Summary") {
+		t.Errorf("expected '## Summary' header, got:\n%s", stdout)
+	}
+}
+
+func TestReadAllSheetsCSV(t *testing.T) {
+	path := createMultiSheetTestFile(t)
+	stdout, _, code := captureRun([]string{"read", "--format", "csv", "--all-sheets", path})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	if !strings.Contains(stdout, "# Data") {
+		t.Errorf("expected '# Data' header, got:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "# Summary") {
+		t.Errorf("expected '# Summary' header, got:\n%s", stdout)
+	}
+}
+
+func TestReadAllSheetsAndSheetMutuallyExclusive(t *testing.T) {
+	path := createMultiSheetTestFile(t)
+	_, stderr, code := captureRun([]string{"read", "--all-sheets", "--sheet", "Data", path})
+	if code != ExitUsage {
+		t.Fatalf("expected exit %d, got %d", ExitUsage, code)
+	}
+	resp := parseResponse(t, stderr)
+	if resp.OK {
+		t.Fatal("expected ok=false")
+	}
+}
+
+// --- --where flag ---
+
+func TestReadWhereEquals(t *testing.T) {
+	path := createTestFile(t)
+	stdout, _, code := captureRun([]string{"read", "--headers", "--where", "Name=Alpha", path})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	resp := parseResponse(t, stdout)
+	data, _ := json.Marshal(resp.Data)
+	var rd readData
+	json.Unmarshal(data, &rd)
+	if len(rd.Rows) != 1 {
+		t.Fatalf("expected 1 filtered row, got %d", len(rd.Rows))
+	}
+	if rd.Rows[0].Row != 2 {
+		t.Errorf("expected filtered row to be row 2, got %d", rd.Rows[0].Row)
+	}
+}
+
+func TestReadWhereNotEquals(t *testing.T) {
+	path := createTestFile(t)
+	stdout, _, code := captureRun([]string{"read", "--headers", "--where", "Name!=Alpha", path})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	resp := parseResponse(t, stdout)
+	data, _ := json.Marshal(resp.Data)
+	var rd readData
+	json.Unmarshal(data, &rd)
+	// Should get Beta (row 3) and the formula row (row 4).
+	for _, row := range rd.Rows {
+		if row.Row == 2 {
+			t.Error("did not expect row 2 (Alpha) in !=Alpha filter")
+		}
+	}
+}
+
+func TestReadWhereNumericGt(t *testing.T) {
+	path := createTestFile(t)
+	stdout, _, code := captureRun([]string{"read", "--headers", "--where", "Value>15", "--range", "A1:B3", path})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	resp := parseResponse(t, stdout)
+	data, _ := json.Marshal(resp.Data)
+	var rd readData
+	json.Unmarshal(data, &rd)
+	if len(rd.Rows) != 1 {
+		t.Fatalf("expected 1 row with Value>15, got %d", len(rd.Rows))
+	}
+	if rd.Rows[0].Row != 3 {
+		t.Errorf("expected row 3 (Beta/20), got row %d", rd.Rows[0].Row)
+	}
+}
+
+func TestReadWhereByColumnLetter(t *testing.T) {
+	path := createTestFile(t)
+	// No --headers, use column letter A.
+	stdout, _, code := captureRun([]string{"read", "--where", "A=Alpha", path})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	resp := parseResponse(t, stdout)
+	data, _ := json.Marshal(resp.Data)
+	var rd readData
+	json.Unmarshal(data, &rd)
+	if len(rd.Rows) != 1 {
+		t.Fatalf("expected 1 filtered row, got %d", len(rd.Rows))
+	}
+}
+
+func TestReadWhereMarkdown(t *testing.T) {
+	path := createTestFile(t)
+	stdout, _, code := captureRun([]string{"read", "--format", "markdown", "--headers", "--where", "Name=Beta", path})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	if !strings.Contains(stdout, "Beta") {
+		t.Errorf("expected Beta in output, got:\n%s", stdout)
+	}
+	if strings.Contains(stdout, "Alpha") {
+		t.Errorf("did not expect Alpha in filtered output, got:\n%s", stdout)
+	}
+}
+
+func TestReadWhereWithLimit(t *testing.T) {
+	// Test that --limit applies after --where.
+	path := createTestFile(t)
+	stdout, _, code := captureRun([]string{"read", "--headers", "--where", "Value>=10", "--limit", "1", path})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	resp := parseResponse(t, stdout)
+	data, _ := json.Marshal(resp.Data)
+	var rd readData
+	json.Unmarshal(data, &rd)
+	if len(rd.Rows) != 1 {
+		t.Fatalf("expected 1 row (limit after filter), got %d", len(rd.Rows))
+	}
+}
+
+func TestReadWhereInvalidExpr(t *testing.T) {
+	path := createTestFile(t)
+	_, stderr, code := captureRun([]string{"read", "--where", "badexpr", path})
+	if code != ExitUsage {
+		t.Fatalf("expected exit %d, got %d", ExitUsage, code)
+	}
+	resp := parseResponse(t, stderr)
+	if resp.OK {
+		t.Fatal("expected ok=false for invalid --where")
+	}
+}
+
+// --- Edit help formula note ---
+
+func TestEditHelpFormulaNote(t *testing.T) {
+	_, stderr, code := captureRun([]string{"edit", "--help"})
+	if code != ExitSuccess {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	if !strings.Contains(stderr, "auto-expand formula ranges") {
+		t.Errorf("expected formula range note in edit help, got:\n%s", stderr)
+	}
+}
+
+// --- --style-summary flag ---
+
+func createStyledTestFile(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "styled.xlsx")
+	f := werkbook.New(werkbook.FirstSheet("Sheet1"))
+	s := f.Sheet("Sheet1")
+	s.SetValue("A1", "Header")
+	s.SetValue("A2", "Data")
+	s.SetStyle("A1", &werkbook.Style{
+		Font: &werkbook.Font{Bold: true, Size: 14},
+	})
+	if err := f.SaveAs(path); err != nil {
+		t.Fatalf("failed to create styled test file: %v", err)
+	}
+	return path
+}
+
+func TestReadStyleSummaryJSON(t *testing.T) {
+	path := createStyledTestFile(t)
+	stdout, _, code := captureRun([]string{"read", "--style-summary", path})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	if !strings.Contains(stdout, `"style_summary"`) {
+		t.Errorf("expected style_summary field in JSON output, got:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "bold") {
+		t.Errorf("expected 'bold' in style summary, got:\n%s", stdout)
+	}
+}
+
+func TestReadStyleSummaryMarkdown(t *testing.T) {
+	path := createStyledTestFile(t)
+	stdout, _, code := captureRun([]string{"read", "--format", "markdown", "--headers", "--style-summary", path})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d", code)
+	}
+	if !strings.Contains(stdout, "Style") {
+		t.Errorf("expected Style column header in markdown output, got:\n%s", stdout)
+	}
+}
+
+// --- filter.go unit tests ---
+
+func TestParseWhere(t *testing.T) {
+	tests := []struct {
+		input string
+		col   string
+		op    string
+		val   string
+	}{
+		{"Name=Alice", "Name", "=", "Alice"},
+		{"Age>=30", "Age", ">=", "30"},
+		{"Score!=0", "Score", "!=", "0"},
+		{"A<100", "A", "<", "100"},
+		{"B>5", "B", ">", "5"},
+		{"X<=10", "X", "<=", "10"},
+	}
+	for _, tt := range tests {
+		fc, err := parseWhere(tt.input)
+		if err != nil {
+			t.Errorf("parseWhere(%q): unexpected error: %v", tt.input, err)
+			continue
+		}
+		if fc.Column != tt.col || fc.Op != tt.op || fc.Value != tt.val {
+			t.Errorf("parseWhere(%q) = {%q, %q, %q}, want {%q, %q, %q}",
+				tt.input, fc.Column, fc.Op, fc.Value, tt.col, tt.op, tt.val)
+		}
+	}
+}
+
+func TestParseWhereInvalid(t *testing.T) {
+	_, err := parseWhere("justtext")
+	if err == nil {
+		t.Error("expected error for invalid --where expression")
+	}
+}
+
+func TestColumnNumberToLetter(t *testing.T) {
+	tests := []struct {
+		col    int
+		expect string
+	}{
+		{1, "A"},
+		{2, "B"},
+		{26, "Z"},
+		{27, "AA"},
+	}
+	for _, tt := range tests {
+		got := columnNumberToLetter(tt.col)
+		if got != tt.expect {
+			t.Errorf("columnNumberToLetter(%d) = %q, want %q", tt.col, got, tt.expect)
+		}
+	}
+}
+
+func TestCompareValues(t *testing.T) {
+	// Numeric comparison.
+	if !compareValues("10", ">", "5") {
+		t.Error("expected 10 > 5")
+	}
+	if compareValues("3", ">", "5") {
+		t.Error("did not expect 3 > 5")
+	}
+	// String comparison (case-insensitive for =).
+	if !compareValues("hello", "=", "Hello") {
+		t.Error("expected case-insensitive equal")
+	}
+	if !compareValues("hello", "!=", "world") {
+		t.Error("expected hello != world")
+	}
+}
+
+func TestStyleSummary(t *testing.T) {
+	s := &werkbook.Style{
+		Font: &werkbook.Font{Bold: true, Size: 12, Color: "FF0000"},
+		Fill: &werkbook.Fill{Color: "00FF00"},
+	}
+	summary := styleSummary(s)
+	if !strings.Contains(summary, "bold") {
+		t.Errorf("expected 'bold' in summary: %s", summary)
+	}
+	if !strings.Contains(summary, "12pt") {
+		t.Errorf("expected '12pt' in summary: %s", summary)
+	}
+	if !strings.Contains(summary, "color:#FF0000") {
+		t.Errorf("expected 'color:#FF0000' in summary: %s", summary)
+	}
+	if !strings.Contains(summary, "fill:#00FF00") {
+		t.Errorf("expected 'fill:#00FF00' in summary: %s", summary)
+	}
+}
+
+func TestStyleSummaryNil(t *testing.T) {
+	if styleSummary(nil) != "" {
+		t.Error("expected empty string for nil style")
+	}
+}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	werkbook "github.com/werkbook/werkbook"
@@ -226,4 +227,47 @@ func parseVAlign(s string) werkbook.VerticalAlign {
 	default:
 		return werkbook.VAlignBottom
 	}
+}
+
+// styleSummary returns a short human-readable summary of a style, e.g. "bold, fill:#FF0000, 12pt".
+func styleSummary(s *werkbook.Style) string {
+	if s == nil {
+		return ""
+	}
+	var parts []string
+	if s.Font != nil {
+		if s.Font.Bold {
+			parts = append(parts, "bold")
+		}
+		if s.Font.Italic {
+			parts = append(parts, "italic")
+		}
+		if s.Font.Underline {
+			parts = append(parts, "underline")
+		}
+		if s.Font.Size > 0 {
+			parts = append(parts, fmt.Sprintf("%gpt", s.Font.Size))
+		}
+		if s.Font.Name != "" {
+			parts = append(parts, s.Font.Name)
+		}
+		if s.Font.Color != "" {
+			parts = append(parts, "color:#"+s.Font.Color)
+		}
+	}
+	if s.Fill != nil && s.Fill.Color != "" {
+		parts = append(parts, "fill:#"+s.Fill.Color)
+	}
+	if s.NumFmt != "" {
+		parts = append(parts, "fmt:"+s.NumFmt)
+	}
+	if s.Alignment != nil {
+		if h := hAlignString(s.Alignment.Horizontal); h != "" {
+			parts = append(parts, "align:"+h)
+		}
+		if s.Alignment.WrapText {
+			parts = append(parts, "wrap")
+		}
+	}
+	return strings.Join(parts, ", ")
 }

@@ -45,7 +45,10 @@ Patch format:
 Examples:
   werkbook edit --patch '[{"cell":"A1","value":"updated"}]' data.xlsx
   echo '[{"cell":"B1","formula":"SUM(A1:A10)"}]' | werkbook edit data.xlsx
-  werkbook edit --dry-run --patch '[{"cell":"A1","clear":true}]' data.xlsx`)
+  werkbook edit --dry-run --patch '[{"cell":"A1","clear":true}]' data.xlsx
+
+Note: Setting cell values does not auto-expand formula ranges. If you add
+data beyond a range like SUM(B2:B3), update the formula separately.`)
 		return ExitSuccess
 	}
 

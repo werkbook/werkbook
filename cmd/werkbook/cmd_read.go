@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 
 	werkbook "github.com/werkbook/werkbook"
 )
@@ -15,18 +17,24 @@ type readData struct {
 	Rows    []rowData `json:"rows"`
 }
 
+type readMultiData struct {
+	File   string     `json:"file"`
+	Sheets []readData `json:"sheets"`
+}
+
 type rowData struct {
 	Row   int                `json:"row"`
 	Cells map[string]cellData `json:"cells"`
 }
 
 type cellData struct {
-	Value      any    `json:"value"`
-	Type       string `json:"type"`
-	Formatted  string `json:"formatted,omitempty"`
-	Formula    string `json:"formula,omitempty"`
-	HasFormula bool   `json:"has_formula,omitempty"`
-	Style      any    `json:"style,omitempty"`
+	Value        any    `json:"value"`
+	Type         string `json:"type"`
+	Formatted    string `json:"formatted,omitempty"`
+	Formula      string `json:"formula,omitempty"`
+	HasFormula   bool   `json:"has_formula,omitempty"`
+	Style        any    `json:"style,omitempty"`
+	StyleSummary string `json:"style_summary,omitempty"`
 }
 
 func cmdRead(args []string, globals globalFlags) int {
@@ -40,9 +48,16 @@ Use 'calc' to force formula recalculation.
 
 Flags:
   --sheet <name>        Read from the named sheet (default: first sheet)
+  --all-sheets          Read all sheets (mutually exclusive with --sheet)
   --range <A1:D10>      Read a specific range (default: full used range)
+  --limit <N>           Limit output to first N data rows
+  --head <N>            Alias for --limit
+  --where <expr>        Filter rows (repeatable, AND logic)
+                        Operators: =, !=, <, >, <=, >=
+                        Column ref: header name (with --headers) or letter (A, B)
   --include-formulas    Include formula strings in output
   --include-styles      Include style objects in output
+  --style-summary       Include human-readable style summary per cell
   --headers             Treat first row as headers
 
 Date cells are automatically detected and returned with type "date"
@@ -52,12 +67,18 @@ Examples:
   werkbook read data.xlsx
   werkbook read --range A1:C10 data.xlsx
   werkbook read --headers --include-formulas data.xlsx
-  werkbook read --format csv --headers data.xlsx`)
+  werkbook read --format csv --headers data.xlsx
+  werkbook read --limit 5 --headers data.xlsx
+  werkbook read --all-sheets --format markdown data.xlsx
+  werkbook read --headers --where "Status=Failed" data.xlsx
+  werkbook read --style-summary data.xlsx`)
 		return ExitSuccess
 	}
 
 	var sheetFlag, rangeFlag string
-	var includeFormulas, includeStyles, headersFlag bool
+	var includeFormulas, includeStyles, headersFlag, allSheets, styleSummaryFlag bool
+	var limitFlag int
+	var whereExprs []string
 
 	i := 0
 	var filePath string
@@ -70,6 +91,9 @@ Examples:
 			}
 			sheetFlag = args[i+1]
 			i += 2
+		case "--all-sheets":
+			allSheets = true
+			i++
 		case "--range":
 			if i+1 >= len(args) {
 				writeError(cmd, errUsage("--range requires a value"), globals)
@@ -77,11 +101,33 @@ Examples:
 			}
 			rangeFlag = args[i+1]
 			i += 2
+		case "--limit", "--head":
+			if i+1 >= len(args) {
+				writeError(cmd, errUsage(args[i]+" requires a value"), globals)
+				return ExitUsage
+			}
+			n, err := strconv.Atoi(args[i+1])
+			if err != nil || n < 1 {
+				writeError(cmd, errUsage(args[i]+" must be a positive integer"), globals)
+				return ExitUsage
+			}
+			limitFlag = n
+			i += 2
+		case "--where":
+			if i+1 >= len(args) {
+				writeError(cmd, errUsage("--where requires a value"), globals)
+				return ExitUsage
+			}
+			whereExprs = append(whereExprs, args[i+1])
+			i += 2
 		case "--include-formulas":
 			includeFormulas = true
 			i++
 		case "--include-styles":
 			includeStyles = true
+			i++
+		case "--style-summary":
+			styleSummaryFlag = true
 			i++
 		case "--headers":
 			headersFlag = true
@@ -102,6 +148,22 @@ Examples:
 		return ExitUsage
 	}
 
+	if allSheets && sheetFlag != "" {
+		writeError(cmd, errUsage("--all-sheets and --sheet are mutually exclusive"), globals)
+		return ExitUsage
+	}
+
+	// Parse --where conditions.
+	var filters []filterCondition
+	for _, expr := range whereExprs {
+		fc, err := parseWhere(expr)
+		if err != nil {
+			writeError(cmd, errUsage(err.Error()), globals)
+			return ExitUsage
+		}
+		filters = append(filters, fc)
+	}
+
 	f, err := werkbook.Open(filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -110,6 +172,20 @@ Examples:
 			writeError(cmd, errFileOpen(filePath, err), globals)
 		}
 		return ExitFileIO
+	}
+
+	opts := readOpts{
+		rangeFlag:      rangeFlag,
+		headersFlag:    headersFlag,
+		includeFormulas: includeFormulas,
+		includeStyles:  includeStyles,
+		styleSummary:   styleSummaryFlag,
+		limitFlag:      limitFlag,
+		filters:        filters,
+	}
+
+	if allSheets {
+		return readAllSheets(cmd, f, filePath, opts, globals)
 	}
 
 	// Resolve sheet.
@@ -129,36 +205,201 @@ Examples:
 		return ExitValidate
 	}
 
-	// Determine range.
-	var col1, row1, col2, row2 int
-	if rangeFlag != "" {
-		col1, row1, col2, row2, err = werkbook.RangeToCoordinates(rangeFlag)
+	return readSingleSheet(cmd, s, filePath, sheetName, opts, globals)
+}
+
+type readOpts struct {
+	rangeFlag       string
+	headersFlag     bool
+	includeFormulas bool
+	includeStyles   bool
+	styleSummary    bool
+	limitFlag       int
+	filters         []filterCondition
+}
+
+func readAllSheets(cmd string, f *werkbook.File, filePath string, opts readOpts, globals globalFlags) int {
+	names := f.SheetNames()
+	if len(names) == 0 {
+		writeError(cmd, errInternal(fmt.Errorf("workbook has no sheets")), globals)
+		return ExitInternal
+	}
+
+	if globals.format == FormatMarkdown || globals.format == FormatCSV {
+		var sb strings.Builder
+		for i, name := range names {
+			s := f.Sheet(name)
+			if s == nil {
+				continue
+			}
+			headers, tableRows, rangeStr := readSheetTable(s, opts)
+			_ = rangeStr
+
+			if globals.format == FormatMarkdown {
+				if i > 0 {
+					sb.WriteString("\n")
+				}
+				sb.WriteString("## ")
+				sb.WriteString(name)
+				sb.WriteString("\n\n")
+				sb.WriteString(formatTable(globals.format, headers, tableRows))
+			} else {
+				if i > 0 {
+					sb.WriteString("\n")
+				}
+				sb.WriteString("# ")
+				sb.WriteString(name)
+				sb.WriteString("\n")
+				sb.WriteString(formatTable(globals.format, headers, tableRows))
+			}
+		}
+		fmt.Print(sb.String())
+		return ExitSuccess
+	}
+
+	// JSON output.
+	var sheets []readData
+	for _, name := range names {
+		s := f.Sheet(name)
+		if s == nil {
+			continue
+		}
+		rd, exitCode := buildReadData(s, filePath, name, opts)
+		if exitCode != ExitSuccess {
+			return exitCode
+		}
+		sheets = append(sheets, rd)
+	}
+
+	data := readMultiData{
+		File:   filePath,
+		Sheets: sheets,
+	}
+	writeSuccess(cmd, data, globals)
+	return ExitSuccess
+}
+
+func readSingleSheet(cmd string, s *werkbook.Sheet, filePath, sheetName string, opts readOpts, globals globalFlags) int {
+	if globals.format == FormatMarkdown || globals.format == FormatCSV {
+		headers, tableRows, _ := readSheetTable(s, opts)
+		output := formatTable(globals.format, headers, tableRows)
+		fmt.Print(output)
+		return ExitSuccess
+	}
+
+	rd, exitCode := buildReadData(s, filePath, sheetName, opts)
+	if exitCode != ExitSuccess {
+		return exitCode
+	}
+	writeSuccess(cmd, rd, globals)
+	return ExitSuccess
+}
+
+// readSheetTable reads a sheet and returns headers and string rows for markdown/CSV output.
+func readSheetTable(s *werkbook.Sheet, opts readOpts) (headers []string, tableRows [][]string, rangeStr string) {
+	col1, row1, col2, row2, err := resolveRange(s, opts.rangeFlag)
+	if err != nil {
+		return nil, nil, ""
+	}
+
+	rangeStr = buildRangeStr(opts.rangeFlag, col1, row1, col2, row2)
+
+	if opts.headersFlag {
+		for c := col1; c <= col2; c++ {
+			ref, _ := werkbook.CoordinatesToCellName(c, row1)
+			v, _ := s.GetValue(ref)
+			headers = append(headers, valueToString(v))
+		}
+	}
+
+	if opts.styleSummary {
+		headers = append(headers, "Style")
+	}
+
+	startRow := row1
+	if opts.headersFlag {
+		startRow = row1 + 1
+	}
+
+	// Only cap row2 if there are no filters (filters need to scan all rows).
+	if opts.limitFlag > 0 && len(opts.filters) == 0 {
+		maxRow := startRow + opts.limitFlag - 1
+		if maxRow < row2 {
+			row2 = maxRow
+		}
+	}
+
+	// Resolve filters. Strip the Style header column when resolving filter indices.
+	filterHeaders := headers
+	if opts.styleSummary && len(headers) > 0 {
+		filterHeaders = headers[:len(headers)-1]
+	}
+	var resolved []resolvedFilter
+	for _, fc := range opts.filters {
+		idx, err := resolveColumnIndex(fc.Column, filterHeaders, col1)
 		if err != nil {
-			writeError(cmd, errInvalidRange(rangeFlag, err), globals)
-			return ExitValidate
+			continue // skip unresolvable filters
 		}
-	} else {
-		maxRow := s.MaxRow()
-		maxCol := s.MaxCol()
-		if maxRow == 0 || maxCol == 0 {
-			// Empty sheet.
-			data := readData{File: filePath, Sheet: sheetName, Rows: []rowData{}}
-			writeSuccess(cmd, data, globals)
-			return ExitSuccess
-		}
-		col1, row1, col2, row2 = 1, 1, maxCol, maxRow
+		resolved = append(resolved, resolvedFilter{cond: fc, colIdx: idx})
 	}
 
-	rangeStr := rangeFlag
-	if rangeStr == "" {
-		start, _ := werkbook.CoordinatesToCellName(col1, row1)
-		end, _ := werkbook.CoordinatesToCellName(col2, row2)
-		rangeStr = start + ":" + end
+	var count int
+	for r := startRow; r <= row2; r++ {
+		var row []string
+		for c := col1; c <= col2; c++ {
+			ref, _ := werkbook.CoordinatesToCellName(c, r)
+			v, _ := s.GetValue(ref)
+			if v.Type == werkbook.TypeNumber && isDateCell(s, ref) {
+				row = append(row, werkbook.ExcelSerialToTime(v.Number).Format("2006-01-02"))
+			} else {
+				row = append(row, valueToString(v))
+			}
+		}
+
+		if len(resolved) > 0 && !matchesFilters(row, resolved) {
+			continue
+		}
+
+		if opts.styleSummary {
+			var summary string
+			for c := col1; c <= col2; c++ {
+				ref, _ := werkbook.CoordinatesToCellName(c, r)
+				style, _ := s.GetStyle(ref)
+				if sum := styleSummary(style); sum != "" {
+					summary = sum
+					break
+				}
+			}
+			row = append(row, summary)
+		}
+
+		tableRows = append(tableRows, row)
+		count++
+
+		if opts.limitFlag > 0 && count >= opts.limitFlag {
+			break
+		}
 	}
 
-	// Read headers from row1 if requested.
+	return headers, tableRows, rangeStr
+}
+
+// buildReadData builds JSON readData for a single sheet.
+func buildReadData(s *werkbook.Sheet, filePath, sheetName string, opts readOpts) (readData, int) {
+	col1, row1, col2, row2, err := resolveRange(s, opts.rangeFlag)
+	if err != nil {
+		return readData{}, ExitValidate
+	}
+
+	rangeStr := buildRangeStr(opts.rangeFlag, col1, row1, col2, row2)
+
+	if col1 == 0 {
+		// Empty sheet.
+		return readData{File: filePath, Sheet: sheetName, Rows: []rowData{}}, ExitSuccess
+	}
+
 	var headers []string
-	if headersFlag {
+	if opts.headersFlag {
 		for c := col1; c <= col2; c++ {
 			ref, _ := werkbook.CoordinatesToCellName(c, row1)
 			v, _ := s.GetValue(ref)
@@ -167,34 +408,36 @@ Examples:
 	}
 
 	startRow := row1
-	if headersFlag {
+	if opts.headersFlag {
 		startRow = row1 + 1
 	}
 
-	// Handle non-JSON formats without building the JSON row data.
-	if globals.format == FormatMarkdown || globals.format == FormatCSV {
-		var tableRows [][]string
-		for r := startRow; r <= row2; r++ {
-			var row []string
+	// Resolve filters.
+	var resolved []resolvedFilter
+	for _, fc := range opts.filters {
+		idx, ferr := resolveColumnIndex(fc.Column, headers, col1)
+		if ferr != nil {
+			continue
+		}
+		resolved = append(resolved, resolvedFilter{cond: fc, colIdx: idx})
+	}
+
+	var rows []rowData
+	var count int
+	for r := startRow; r <= row2; r++ {
+		// If we have filters, build a string row first to check.
+		if len(resolved) > 0 {
+			var strRow []string
 			for c := col1; c <= col2; c++ {
 				ref, _ := werkbook.CoordinatesToCellName(c, r)
 				v, _ := s.GetValue(ref)
-				if v.Type == werkbook.TypeNumber && isDateCell(s, ref) {
-					row = append(row, werkbook.ExcelSerialToTime(v.Number).Format("2006-01-02"))
-				} else {
-					row = append(row, valueToString(v))
-				}
+				strRow = append(strRow, valueToString(v))
 			}
-			tableRows = append(tableRows, row)
+			if !matchesFilters(strRow, resolved) {
+				continue
+			}
 		}
-		output := formatTable(globals.format, headers, tableRows)
-		fmt.Print(output)
-		return ExitSuccess
-	}
 
-	// Build row data for JSON output.
-	var rows []rowData
-	for r := startRow; r <= row2; r++ {
 		cells := make(map[string]cellData)
 		for c := col1; c <= col2; c++ {
 			ref, _ := werkbook.CoordinatesToCellName(c, r)
@@ -208,7 +451,6 @@ Examples:
 				Type:  valueTypeName(v),
 			}
 
-			// Detect date cells.
 			if v.Type == werkbook.TypeNumber {
 				if isDateCell(s, ref) {
 					cd.Type = "date"
@@ -216,19 +458,25 @@ Examples:
 				}
 			}
 
-			// Always signal if the cell has a formula.
 			formula, _ := s.GetFormula(ref)
 			if formula != "" {
 				cd.HasFormula = true
-				if includeFormulas {
+				if opts.includeFormulas {
 					cd.Formula = formula
 				}
 			}
 
-			if includeStyles {
+			if opts.includeStyles {
 				style, _ := s.GetStyle(ref)
 				if style != nil {
 					cd.Style = styleToJSON(style)
+				}
+			}
+
+			if opts.styleSummary {
+				style, _ := s.GetStyle(ref)
+				if sum := styleSummary(style); sum != "" {
+					cd.StyleSummary = sum
 				}
 			}
 
@@ -238,22 +486,51 @@ Examples:
 		if len(cells) > 0 {
 			rows = append(rows, rowData{Row: r, Cells: cells})
 		}
+
+		count++
+		if opts.limitFlag > 0 && count >= opts.limitFlag {
+			break
+		}
 	}
 
 	if rows == nil {
 		rows = []rowData{}
 	}
 
-	data := readData{
+	return readData{
 		File:    filePath,
 		Sheet:   sheetName,
 		Range:   rangeStr,
 		Headers: headers,
 		Rows:    rows,
-	}
+	}, ExitSuccess
+}
 
-	writeSuccess(cmd, data, globals)
-	return ExitSuccess
+// resolveRange returns the column/row bounds for a sheet given an optional range flag.
+// Returns (0,0,0,0,nil) for an empty sheet with no explicit range.
+func resolveRange(s *werkbook.Sheet, rangeFlag string) (col1, row1, col2, row2 int, err error) {
+	if rangeFlag != "" {
+		col1, row1, col2, row2, err = werkbook.RangeToCoordinates(rangeFlag)
+		return
+	}
+	maxRow := s.MaxRow()
+	maxCol := s.MaxCol()
+	if maxRow == 0 || maxCol == 0 {
+		return 0, 0, 0, 0, nil
+	}
+	return 1, 1, maxCol, maxRow, nil
+}
+
+func buildRangeStr(rangeFlag string, col1, row1, col2, row2 int) string {
+	if rangeFlag != "" {
+		return rangeFlag
+	}
+	if col1 == 0 {
+		return ""
+	}
+	start, _ := werkbook.CoordinatesToCellName(col1, row1)
+	end, _ := werkbook.CoordinatesToCellName(col2, row2)
+	return start + ":" + end
 }
 
 func valueToString(v werkbook.Value) string {
